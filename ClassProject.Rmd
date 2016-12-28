@@ -1,0 +1,242 @@
+---
+title: Predicting Human Activity
+author: "Mark Potter"
+date: "December 26, 2016"
+output: 
+        html_document:
+                toc: true
+                toc_depth: 3
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+        # load libraries
+        library(knitr)
+        library(caret)
+        library(Hmisc)
+        library(gridExtra)
+        library(ggplot2)
+        library(caret)
+        library(rattle)
+        library(RGtk2)
+        library(RGtk2Extras)
+        library(ElemStatLearn)
+        library(ISLR)
+        library(gbm)
+        library(quantmod)
+        library(xts)
+        library(forecast)
+        library(pander)
+        library(dplyr)
+        # pander options
+        panderOptions('table.style', 'multiline')
+        panderOptions("table.split.table", 105)
+```
+
+# Executive Summary
+
+This project will show how a model is developed to predict how well a human activity is performed based on a dataset developed by Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13) . Stuttgart, Germany: ACM SIGCHI, 2013.
+
+Read more: http://groupware.les.inf.puc-rio.br/har#wle_paper_section#ixzz4TyozbKLI
+
+## Explore and Clean the Data
+
+```{r clean, echo=TRUE}
+        # load data
+        mainDir <- "C:/PracticalMachineLearningClassProject"
+        setwd(mainDir)
+        fileTraining <- "pml-training.csv"
+        training <- read.csv(file=fileTraining, head=TRUE, sep=",",
+                             na.strings=c('#DIV/0', '', 'NA'), 
+                             stringsAsFactors = FALSE)
+        fileTesting <- "pml-testing.csv"
+        testing <- read.csv(file=fileTesting, head=TRUE, sep=",",
+                             na.strings=c('#DIV/0', '', 'NA'), 
+                             stringsAsFactors = FALSE)
+        # clean data
+        drops <- colnames(training)[colSums(is.na(training)) > 19000]
+        drops <- c("X", "user_name", "cvtd_timestamp", "raw_timestamp_part_1", "raw_timestamp_part_2", 
+                   "new_window", "num_window", drops)
+        train2 <- training[, !(names(training) %in% drops)]
+        tsFN <- testing[, !(names(training) %in% drops)]
+        inTrain <- createDataPartition(train2$classe,p=0.7,list=FALSE)
+        trFN <- train2[inTrain,]
+        vaFN <- train2[-inTrain,]
+        trFN$classe <- as.factor(trFN$classe)
+        vaFN$classe <- as.factor(vaFN$classe)
+```
+
+### Dimensions
+
+The training dataset has `r dim(training)[1]` rows and `r dim(training)[2]` columns. The testing has dataset has `r dim(testing)[1]` rows and  `r dim(testing)[2]` columns.  We will split the training set into a training and validation set using a .7 split.
+
+### Clean the Data
+
+Several of the columns contain mostly NA's and #DIV/0! these columns are removed before the model is developed. In addition, columns row number, user name, cvtd_timestamp, raw_timestamp_part_1, raw_timestamp_part_2, new_window, and num_window columns are not used in the analysis. The columns removed are shown in table 1.  After column removal the training, validation and testing datsets have `r dim(trFN)[2]` columns.
+
+### Attribute types
+
+The attributes of the final columns are included in table 2 in the appendix.  We will be developing a model to predict classe from the other columns in the dataset.  The levels of classe are shown in table 3.
+
+## Visualize the Data
+
+The number of variables makes it hard to do classic box and feature plots.  However, this data may be plotted individually for belt, arm, dumbbell, and forearm.  It appears that the A category has mostly higher values then the other classifiers.
+
+## Experiment with models
+
+For Train controlling we will use cross validation (cv) with a number of 10.  Our metric will be accuracy.  Due to time to evaluate the model we will use an n sample size of 1200 to do the experiment with.
+
+```{r experiment models, echo=TRUE, message=FALSE, warning=FALSE}
+n <- 1200
+sample <- sample_n(trFN, n)
+tc <- trainControl(method="cv", number=10)
+mc <- "Accuracy"
+# LDA
+set.seed(n)
+model.lda <- train(classe~., data=sample, method="lda", metric=mc, trControl=tc)
+# CART
+set.seed(n)
+model.cart <- train(classe~., data=sample, method="rpart", metric=mc, trControl=tc)
+# KNN
+set.seed(n)
+model.knn <- train(classe~., data=sample, method="knn", metric=mc, trControl=tc)
+# SVM
+set.seed(n)
+model.svm <- train(classe~., data=sample, method="svmRadial", metric=mc, trControl=tc)
+# Random Forest
+set.seed(n)
+model.rf <- train(classe~., data=sample, method="rf", metric=mc, trControl=tc)
+# Naive Bayes
+set.seed(n)
+model.nb <- train(classe~., data=sample, method="nb", metric=mc, trControl=tc)
+# Gradient Boosting
+set.seed(n)
+model.gbm <- train(classe~., data=sample, method="gbm", metric=mc, trControl=tc, verbose=FALSE)
+# Select the best model
+results <- resamples(list(lda=model.lda, 
+                          cart=model.cart, 
+                          knn=model.knn, 
+                          svm=model.svm, 
+                          rf=model.rf, 
+                          nb=model.nb, 
+                          gbm=model.gbm))
+summary(results)
+dotplot(results)
+```
+
+## Select model
+
+Random Forest and Gradient Boosting are the best models. Lets fully train them.  We pick the random forest model based on accuracy.
+
+```{r experiment models3, echo=TRUE}
+# Random Forest
+n <- 2400
+set.seed(n)
+model2.rf <- train(classe~., data=trFN, method="rf", metric=mc, trControl=tc)
+# Gradient Boosting
+set.seed(n)
+model2.gbm <- train(classe~., data=trFN, method="gbm", metric=mc, trControl=tc, verbose=FALSE)
+# Select the best model
+results2 <- resamples(list(rf=model2.rf, gbm=model2.gbm))
+summary(results2)
+```
+
+## Test model
+
+Test the random forest model against the validation set.
+
+```{r test model, echo=TRUE}
+# Random Forest
+pred.rf <- predict(model2.rf, newdata = vaFN)
+cm <- confusionMatrix(pred.rf, vaFN$classe)
+print(cm)
+```
+
+The expected accuracy percentage is `r round(cm$overall[1], 4) * 100` . 
+The out of sample error rate is expected percentage is  `r 100 - (round(cm$overall[1], 4) * 100)` .
+
+## Perform final model test
+
+Test the random forest model against the test set.
+
+```{r final model, echo=TRUE}
+# Random Forest
+pred.rft <- predict(model2.rf, newdata = tsFN)
+print(pred.rft)
+```
+
+# Appendix
+
+## Table 1 Columns Removed
+
+```{r show NA columns, echo=FALSE}
+drops
+```
+
+## Table 2 Class of Columns
+
+```{r attributes, echo=FALSE}
+str(trFN)
+```
+
+## Table 3 training classe levels
+
+```{r classe levels, echo=FALSE}
+prTR <- prop.table(table(trFN$classe)) * 100
+trLevels <- cbind(freq=table(trFN$classe), percentage=prTR)
+pander(trLevels)
+```
+
+## Box Plot Belt
+
+```{r box plot belt, echo=FALSE}
+belt <- colnames(trFN)[grep("_belt",colnames(trFN))]
+featurePlot(x=trFN[,belt], y=trFN[,53], plot="box", layout=c(4,4), auto.key = list(columns = 5))
+```
+
+## Density Plot Belt
+
+```{r density plot belt, echo=FALSE}
+scales <- list(x=list(relation="free"), y=list(relation="free"))
+featurePlot(x=trFN[,belt], y=trFN[,53], plot="density", scales=scales, layout=c(4,4), auto.key = list(columns = 5))
+```
+
+## Box Plot Arm
+
+```{r box plot arm, echo=FALSE}
+arm <- colnames(trFN)[grep("_arm",colnames(trFN))]
+featurePlot(x=trFN[,arm], y=trFN[,53], plot="box", layout=c(4,4), auto.key = list(columns = 5))
+```
+
+## Density Plot Arm
+
+```{r density plot arm, echo=FALSE}
+featurePlot(x=trFN[,arm], y=trFN[,53], plot="density", scales=scales, layout=c(4,4), auto.key = list(columns = 5))
+```
+
+## Box Plot Dumbbell
+
+```{r box plot dumbbell, echo=FALSE}
+dumbbell <- colnames(trFN)[grep("_dumbbell",colnames(trFN))]
+featurePlot(x=trFN[,dumbbell], y=trFN[,53], plot="box", layout=c(4,4), auto.key = list(columns = 5))
+```
+
+## Density Plot Dumbbell
+
+```{r density plot dumbbell, echo=FALSE}
+featurePlot(x=trFN[,dumbbell], y=trFN[,53], plot="density", scales=scales, layout=c(4,4), auto.key = list(columns = 5))
+```
+
+## Box Plot Forearm
+
+```{r box plot forearm, echo=FALSE}
+forearm <- colnames(trFN)[grep("_forearm",colnames(trFN))]
+featurePlot(x=trFN[,forearm], y=trFN[,53], plot="box", layout=c(4,4), auto.key = list(columns = 5))
+```
+
+## Density Plot Forearm
+
+```{r density plot forearm, echo=FALSE}
+featurePlot(x=trFN[,forearm], y=trFN[,53], plot="density", scales=scales, layout=c(4,4), auto.key = list(columns = 5))
+```
+
